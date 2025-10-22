@@ -1,0 +1,366 @@
+name: YOLO TRAINING SCHEDULER (Kaggle GPU)
+
+on:
+  workflow_dispatch:  # Manual trigger
+  # schedule:
+  #   - cron: '0 2 * * *'   # Runs at 7:30 AM IST daily (optional: uncomment to enable)
+
+jobs:
+  train-yolo-on-kaggle:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # =======================
+      # 1. Checkout Repository
+      # =======================
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            YOLO_TRAINING/Train_Watermark_Detector_Kaggle.ipynb
+            VIDEOS
+          fetch-depth: 1
+
+      # =======================
+      # 2. Install Kaggle API
+      # =======================
+      - name: Install Kaggle API
+        run: |
+          pip install kaggle
+          echo "✅ Kaggle API installed"
+
+      # =======================
+      # 3. Configure Kaggle Credentials
+      # =======================
+      - name: Configure Kaggle
+        run: |
+          mkdir -p ~/.kaggle
+          echo "{\"username\":\"${{ secrets.KAGGLE_USERNAME }}\",\"key\":\"${{ secrets.KAGGLE_KEY }}\"}" > ~/.kaggle/kaggle.json
+          chmod 600 ~/.kaggle/kaggle.json
+          echo "✅ Kaggle credentials configured"
+
+      # =======================
+      # 4. Package Videos as Kaggle Dataset
+      # =======================
+      - name: Prepare Video Dataset
+        run: |
+          echo "📦 Preparing video dataset..."
+          mkdir -p kaggle-video-dataset
+          
+          # Copy all videos from VIDEOS folder
+          if [ -d "VIDEOS" ]; then
+            cp -r VIDEOS/* kaggle-video-dataset/ || echo "⚠️ No video files found"
+            VIDEO_COUNT=$(ls -1 kaggle-video-dataset/*.mp4 2>/dev/null | wc -l)
+            echo "📹 Found $VIDEO_COUNT video files"
+          else
+            echo "❌ VIDEOS folder not found!"
+            exit 1
+          fi
+          
+          # Create dataset metadata
+          cat > kaggle-video-dataset/dataset-metadata.json <<EOF
+          {
+            "id": "${{ secrets.KAGGLE_USERNAME }}/watermark-training-videos",
+            "title": "Watermark Training Videos",
+            "licenses": [
+              { "name": "CC0-1.0" }
+            ],
+            "isPrivate": true
+          }
+          EOF
+          
+          echo "✅ Dataset prepared"
+
+      # =======================
+      # 5. Upload/Update Video Dataset
+      # =======================
+      - name: Create or Update Video Dataset
+        run: |
+          echo "☁️ Uploading videos to Kaggle..."
+          
+          for i in $(seq 1 5); do
+            if kaggle datasets status ${{ secrets.KAGGLE_USERNAME }}/watermark-training-videos >/dev/null 2>&1; then
+              echo "📦 Dataset exists, updating version... (Attempt $i)"
+              if kaggle datasets version -p kaggle-video-dataset -m "Update videos for training run $(date +%Y%m%d_%H%M%S)" --dir-mode zip; then
+                echo "✅ Dataset updated successfully"
+                break
+              fi
+            else
+              echo "🆕 Creating new dataset... (Attempt $i)"
+              if kaggle datasets create -p kaggle-video-dataset --dir-mode zip; then
+                echo "✅ Dataset created successfully"
+                break
+              fi
+            fi
+            
+            if [ $i -lt 5 ]; then
+              echo "⚠️ Upload failed. Retrying in 30 seconds..."
+              sleep 30
+            else
+              echo "❌ Upload failed after 5 attempts"
+              exit 1
+            fi
+          done
+          
+          # Wait for Kaggle to process the dataset
+          echo "⏳ Waiting for Kaggle to process dataset..."
+          sleep 60
+
+      # =======================
+      # 6. Verify Dataset Upload
+      # =======================
+      - name: Verify Dataset
+        run: |
+          echo "🔍 Verifying dataset upload..."
+          kaggle datasets list --user ${{ secrets.KAGGLE_USERNAME }} | grep watermark-training-videos
+          echo "✅ Dataset verified"
+
+      # =======================
+      # 7. Prepare Kaggle Notebook Kernel
+      # =======================
+      - name: Prepare Kernel Metadata
+        run: |
+          echo "📝 Creating kernel metadata..."
+          
+          cat > kernel-metadata.json <<EOF
+          {
+            "id": "${{ secrets.KAGGLE_USERNAME }}/yolo-watermark-training",
+            "title": "YOLO Watermark Training (Auto)",
+            "code_file": "YOLO_TRAINING/Train_Watermark_Detector_Kaggle.ipynb",
+            "language": "python",
+            "kernel_type": "notebook",
+            "is_private": true,
+            "enable_gpu": true,
+            "enable_internet": true,
+            "dataset_sources": [
+              "${{ secrets.KAGGLE_USERNAME }}/watermark-training-videos"
+            ],
+            "competition_sources": [],
+            "kernel_sources": [],
+            "model_sources": []
+          }
+          EOF
+          
+          echo "✅ Kernel metadata created"
+
+      # =======================
+      # 8. Push Notebook to Kaggle (Auto-runs)
+      # =======================
+      - name: Push Training Notebook to Kaggle
+        run: |
+          echo "🚀 Pushing notebook to Kaggle..."
+          kaggle kernels push -p .
+          echo "✅ Notebook pushed and training started!"
+          echo "📊 Training will take 2-4 hours on Kaggle GPU"
+
+      # =======================
+      # 9. Monitor Training Progress
+      # =======================
+      - name: Wait for Training to Complete
+        run: |
+          KERNEL_ID="${{ secrets.KAGGLE_USERNAME }}/yolo-watermark-training"
+          echo "⏳ Monitoring training progress..."
+          echo "Kernel: $KERNEL_ID"
+          
+          # Wait up to 6 hours (72 checks * 5 minutes)
+          for i in $(seq 1 72); do
+            sleep 300  # Wait 5 minutes between checks
+            
+            STATUS=$(kaggle kernels status $KERNEL_ID 2>&1 || echo "ERROR")
+            ELAPSED=$((i * 5))
+            echo "[$ELAPSED min] Status: $STATUS"
+            
+            if [[ "$STATUS" == *"complete"* ]] || [[ "$STATUS" == *"COMPLETE"* ]]; then
+              echo "✅ Training completed successfully!"
+              exit 0
+            elif [[ "$STATUS" == *"error"* ]] || [[ "$STATUS" == *"ERROR"* ]] || [[ "$STATUS" == *"failed"* ]]; then
+              echo "❌ Training failed with error"
+              echo "💡 Check logs at: https://www.kaggle.com/code/$KERNEL_ID"
+              exit 1
+            elif [[ "$STATUS" == *"running"* ]] || [[ "$STATUS" == *"RUNNING"* ]] || [[ "$STATUS" == *"queued"* ]] || [[ "$STATUS" == *"QUEUED"* ]]; then
+              echo "⏳ Training in progress..."
+            else
+              echo "⚠️ Unknown status, continuing to monitor..."
+            fi
+            
+            # Progress indicator
+            if [ $((i % 6)) -eq 0 ]; then
+              echo "📊 Training has been running for $ELAPSED minutes..."
+            fi
+          done
+          
+          echo "⏰ Training exceeded 6 hours - check manually"
+          echo "💡 Visit: https://www.kaggle.com/code/$KERNEL_ID"
+          exit 1
+
+      # =======================
+      # 10. Download Trained Model
+      # =======================
+      - name: Download Training Outputs
+        run: |
+          echo "📥 Downloading trained model..."
+          mkdir -p ./kaggle-outputs
+          
+          for i in $(seq 1 3); do
+            if kaggle kernels output ${{ secrets.KAGGLE_USERNAME }}/yolo-watermark-training -p ./kaggle-outputs; then
+              echo "✅ Outputs downloaded successfully"
+              break
+            else
+              if [ $i -lt 3 ]; then
+                echo "⚠️ Download failed, retrying in 30 seconds..."
+                sleep 30
+              else
+                echo "❌ Download failed after 3 attempts"
+                exit 1
+              fi
+            fi
+          done
+          
+          echo "📂 Downloaded files:"
+          ls -lah ./kaggle-outputs/ || echo "No outputs found"
+
+      # =======================
+      # 11. Organize Model Files
+      # =======================
+      - name: Copy Trained Model to Repository
+        run: |
+          echo "📁 Organizing trained model..."
+          
+          # Create models directory if it doesn't exist
+          mkdir -p VIDEO_EDITING_WATERMARK/models
+          
+          # Find and copy best.pt
+          BEST_PT=$(find ./kaggle-outputs -name "best.pt" -type f | head -1)
+          
+          if [ -f "$BEST_PT" ]; then
+            cp "$BEST_PT" VIDEO_EDITING_WATERMARK/models/best.pt
+            MODEL_SIZE=$(du -h VIDEO_EDITING_WATERMARK/models/best.pt | cut -f1)
+            echo "✅ Model copied: best.pt ($MODEL_SIZE)"
+          else
+            echo "❌ best.pt not found in outputs!"
+            echo "📂 Output contents:"
+            find ./kaggle-outputs -type f
+            exit 1
+          fi
+          
+          # Copy training metrics if available
+          if [ -f "./kaggle-outputs/results.csv" ]; then
+            cp ./kaggle-outputs/results.csv VIDEO_EDITING_WATERMARK/models/training_results.csv
+            echo "✅ Training metrics copied"
+          fi
+
+      # =======================
+      # 12. Generate Training Report
+      # =======================
+      - name: Generate Training Report
+        run: |
+          echo "📊 Generating training report..."
+          
+          cat > YOLO_TRAINING/TRAINING_REPORT.md <<EOF
+          # YOLO Training Report
+          
+          **Training Date:** $(date)
+          **Status:** ✅ Completed
+          
+          ## Model Details
+          - **Model File:** \`VIDEO_EDITING_WATERMARK/models/best.pt\`
+          - **Model Size:** $(du -h VIDEO_EDITING_WATERMARK/models/best.pt | cut -f1)
+          - **Training Platform:** Kaggle GPU (T4 x2)
+          
+          ## Training Configuration
+          - **Epochs:** 200 (with early stopping)
+          - **Batch Size:** 16
+          - **Image Size:** 640
+          - **Patience:** 30
+          - **Model:** YOLOv8 Nano
+          
+          ## Dataset
+          - **Videos:** $(ls -1 VIDEOS/*.mp4 2>/dev/null | wc -l) videos
+          - **Source:** VIDEOS folder
+          
+          ## Next Steps
+          1. Update \`video_editing.py\`: Change \`WATERMARK_MODE = "yolo"\`
+          2. Install ultralytics: \`pip install ultralytics\`
+          3. Run video processing with automatic detection!
+          
+          ## Training Outputs
+          - Model: \`VIDEO_EDITING_WATERMARK/models/best.pt\`
+          - Metrics: \`VIDEO_EDITING_WATERMARK/models/training_results.csv\` (if available)
+          
+          ## Kaggle Notebook
+          View full training logs at: https://www.kaggle.com/code/${{ secrets.KAGGLE_USERNAME }}/yolo-watermark-training
+          
+          ---
+          *Generated automatically by GitHub Actions*
+          EOF
+          
+          echo "✅ Training report generated"
+
+      # =======================
+      # 13. Commit Model to Repository
+      # =======================
+      - name: Commit Trained Model
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add VIDEO_EDITING_WATERMARK/models/best.pt
+          git add VIDEO_EDITING_WATERMARK/models/training_results.csv || echo "No metrics to add"
+          git add YOLO_TRAINING/TRAINING_REPORT.md
+          
+          git commit -m "🤖 Add trained YOLO model from Kaggle
+
+          - Model: best.pt ($(du -h VIDEO_EDITING_WATERMARK/models/best.pt | cut -f1))
+          - Training: Completed on Kaggle GPU
+          - Date: $(date)
+          - Ready for automatic watermark detection" || echo "No changes to commit"
+          
+          git pull --rebase origin main || echo "Already up to date"
+          git push || echo "No changes to push"
+          
+          echo "✅ Model committed to repository!"
+
+      # =======================
+      # 14. Cleanup Kaggle Resources (Optional)
+      # =======================
+      - name: Cleanup Kaggle Dataset (Optional)
+        if: success()
+        run: |
+          echo "🧹 Cleaning up Kaggle resources..."
+          
+          # Uncomment to delete the video dataset after training
+          # kaggle datasets delete ${{ secrets.KAGGLE_USERNAME }}/watermark-training-videos --yes || echo "⚠️ Dataset cleanup skipped"
+          
+          echo "💡 Dataset kept for future training runs"
+          echo "💡 To delete manually, run: kaggle datasets delete ${{ secrets.KAGGLE_USERNAME }}/watermark-training-videos"
+
+      # =======================
+      # 15. Send Completion Summary
+      # =======================
+      - name: Training Summary
+        if: always()
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🎉 YOLO TRAINING WORKFLOW COMPLETED"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "📊 Status: ${{ job.status }}"
+          echo "⏱️ Duration: Approximately 2-4 hours on Kaggle GPU"
+          echo ""
+          if [ -f "VIDEO_EDITING_WATERMARK/models/best.pt" ]; then
+            echo "✅ Model: VIDEO_EDITING_WATERMARK/models/best.pt"
+            echo "📦 Size: $(du -h VIDEO_EDITING_WATERMARK/models/best.pt | cut -f1)"
+          else
+            echo "❌ Model file not found - check Kaggle logs"
+          fi
+          echo ""
+          echo "🔗 Kaggle Notebook: https://www.kaggle.com/code/${{ secrets.KAGGLE_USERNAME }}/yolo-watermark-training"
+          echo "📋 Training Report: YOLO_TRAINING/TRAINING_REPORT.md"
+          echo ""
+          echo "🎯 Next Steps:"
+          echo "   1. Pull latest changes: git pull"
+          echo "   2. Update video_editing.py: WATERMARK_MODE = 'yolo'"
+          echo "   3. Install ultralytics: pip install ultralytics"
+          echo "   4. Run video processing!"
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
