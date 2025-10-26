@@ -75,7 +75,95 @@ jobs:
           echo "✅ Frame extraction complete"
 
       # =======================
-      # 6. Check Extraction Results
+      # 6. Commit Frames in Batches
+      # =======================
+      - name: Commit Extracted Frames in Batches
+        run: |
+          echo "📦 Committing frames in batches of 1000..."
+          
+          # Configure git
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Get list of all extracted frames
+          cd IMAGES
+          FRAMES=($(ls -1 *.jpg 2>/dev/null | sort))
+          TOTAL_FRAMES=${#FRAMES[@]}
+          
+          echo "📊 Total frames to commit: $TOTAL_FRAMES"
+          
+          if [ $TOTAL_FRAMES -eq 0 ]; then
+            echo "⚠️ No frames found to commit"
+            exit 0
+          fi
+          
+          # Batch size
+          BATCH_SIZE=1000
+          BATCH_NUM=0
+          
+          # Commit frames in batches
+          for ((i=0; i<$TOTAL_FRAMES; i+=BATCH_SIZE)); do
+            BATCH_NUM=$((BATCH_NUM + 1))
+            END=$((i + BATCH_SIZE - 1))
+            
+            if [ $END -ge $TOTAL_FRAMES ]; then
+              END=$((TOTAL_FRAMES - 1))
+            fi
+            
+            BATCH_FRAMES=("${FRAMES[@]:$i:$BATCH_SIZE}")
+            
+            echo "📦 Batch $BATCH_NUM: Committing frames $((i + 1)) to $((END + 1)) of $TOTAL_FRAMES"
+            
+            # Add frames in this batch
+            cd ..
+            for frame in "${BATCH_FRAMES[@]}"; do
+              git add "IMAGES/$frame"
+            done
+            
+            # Commit this batch
+            git commit -m "Add frames batch $BATCH_NUM ($((i + 1))-$((END + 1)) of $TOTAL_FRAMES)" || echo "No changes in this batch"
+            
+            # Push this batch
+            git pull --rebase origin main || echo "No changes to pull"
+            git push || echo "Push failed for batch $BATCH_NUM"
+            
+            cd IMAGES
+            
+            echo "✅ Batch $BATCH_NUM committed and pushed"
+          done
+          
+          cd ..
+          echo "✅ All $TOTAL_FRAMES frames committed in $BATCH_NUM batches"
+
+      # =======================
+      # 7. Update Counter File
+      # =======================
+      - name: Commit Counter File
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Get the video range that was processed
+          if [ -f frame_counter.txt ]; then
+            PREV_START=$(($(cat frame_counter.txt) - 10))
+            NEXT_START=$(cat frame_counter.txt)
+          else
+            PREV_START=1
+            NEXT_START=11
+          fi
+          
+          # Commit the counter
+          git add frame_counter.txt
+          git commit -m "Update counter: Video_${PREV_START} to Video_$((PREV_START + 9)) complete. Next: Video_${NEXT_START}" || echo "No counter changes"
+          
+          # Pull and push
+          git pull --rebase origin main || echo "No changes to pull"
+          git push || echo "No changes to push"
+          
+          echo "✅ Counter file updated"
+
+      # =======================
+      # 8. Verify Extraction Results
       # =======================
       - name: Verify Extracted Frames
         run: |
@@ -91,36 +179,7 @@ jobs:
           fi
 
       # =======================
-      # 7. Commit Extracted Frames
-      # =======================
-      - name: Commit Extracted Frames
-        run: |
-          git config --local user.name "github-actions[bot]"
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Add extracted frames
-          git add IMAGES/
-          git add frame_counter.txt
-          
-          # Get the video range that was processed
-          if [ -f frame_counter.txt ]; then
-            PREV_START=$(($(cat frame_counter.txt) - 10))
-            CURRENT_START=$(cat frame_counter.txt)
-          else
-            PREV_START=1
-            CURRENT_START=11
-          fi
-          
-          git commit -m "Extract frames from Video_${PREV_START} to Video_$((PREV_START + 9))" || echo "No changes to commit"
-          
-          # Pull and push
-          git pull --rebase origin main || echo "No changes to pull"
-          git push || echo "No changes to push"
-          
-          echo "✅ Frames committed to repository"
-
-      # =======================
-      # 8. Extraction Summary
+      # 9. Extraction Summary
       # =======================
       - name: Extraction Summary
         if: always()
