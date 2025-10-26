@@ -209,7 +209,7 @@ def main():
     logging.info(f"Starting frame extraction from Video_{start_video}")
     
     # Process 10 videos at a time (configurable)
-    videos_per_batch = 10
+    videos_per_batch = 200
     
     # Process the video range
     process_video_range(start_video, videos_per_batch)
