@@ -1,0 +1,149 @@
+name: FRAME EXTRACTION SCHEDULER
+
+on:
+  workflow_dispatch:  # Manual trigger
+  # schedule:
+  #   - cron: '0 */6 * * *'   # Runs every 6 hours (adjust as needed)
+
+jobs:
+  extract-frames:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # =======================
+      # 1. Checkout Repository
+      # =======================
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            extract_frames.py
+            frame_counter.txt
+            VIDEOS/
+            IMAGES/
+          fetch-depth: 1
+
+      # =======================
+      # 2. Configure Sparse Checkout for Video Range
+      # =======================
+      - name: Configure Sparse Checkout for Video Range
+        run: |
+          # Read the starting video number
+          if [ -f frame_counter.txt ]; then
+            START_VIDEO=$(cat frame_counter.txt)
+          else
+            START_VIDEO=1
+            echo "1" > frame_counter.txt
+          fi
+          
+          echo "📹 Processing videos starting from Video_${START_VIDEO}.mp4"
+          
+          # Add next 10 videos to sparse checkout
+          for i in $(seq 0 9); do
+            VIDEO_NUM=$((START_VIDEO + i))
+            echo "VIDEOS/Video_${VIDEO_NUM}.mp4" >> .git/info/sparse-checkout
+          done
+          
+          git sparse-checkout reapply
+          
+          echo "✅ Sparse checkout configured for Video_${START_VIDEO} to Video_$((START_VIDEO + 9))"
+
+      # =======================
+      # 3. Set up Python Environment
+      # =======================
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      # =======================
+      # 4. Install Dependencies
+      # =======================
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install opencv-python-headless numpy
+          echo "✅ Dependencies installed"
+
+      # =======================
+      # 5. Run Frame Extraction Script
+      # =======================
+      - name: Extract Frames from Videos
+        run: |
+          echo "🎬 Starting frame extraction..."
+          python extract_frames.py
+          echo "✅ Frame extraction complete"
+
+      # =======================
+      # 6. Check Extraction Results
+      # =======================
+      - name: Verify Extracted Frames
+        run: |
+          if [ -d "IMAGES" ]; then
+            FRAME_COUNT=$(ls -1 IMAGES/*.jpg 2>/dev/null | wc -l)
+            echo "📊 Total frames in IMAGES folder: $FRAME_COUNT"
+            
+            # Show some sample filenames
+            echo "📸 Sample extracted frames:"
+            ls -1 IMAGES/*.jpg 2>/dev/null | head -5
+          else
+            echo "⚠️ IMAGES folder not found"
+          fi
+
+      # =======================
+      # 7. Commit Extracted Frames
+      # =======================
+      - name: Commit Extracted Frames
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Add extracted frames
+          git add IMAGES/
+          git add frame_counter.txt
+          
+          # Get the video range that was processed
+          if [ -f frame_counter.txt ]; then
+            PREV_START=$(($(cat frame_counter.txt) - 10))
+            CURRENT_START=$(cat frame_counter.txt)
+          else
+            PREV_START=1
+            CURRENT_START=11
+          fi
+          
+          git commit -m "Extract frames from Video_${PREV_START} to Video_$((PREV_START + 9))" || echo "No changes to commit"
+          
+          # Pull and push
+          git pull --rebase origin main || echo "No changes to pull"
+          git push || echo "No changes to push"
+          
+          echo "✅ Frames committed to repository"
+
+      # =======================
+      # 8. Extraction Summary
+      # =======================
+      - name: Extraction Summary
+        if: always()
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "   FRAME EXTRACTION SUMMARY"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          if [ -f frame_counter.txt ]; then
+            NEXT_START=$(cat frame_counter.txt)
+            echo "✅ Processed: Video_$((NEXT_START - 10)) to Video_$((NEXT_START - 1))"
+            echo "📹 Next batch: Video_${NEXT_START} to Video_$((NEXT_START + 9))"
+          fi
+          
+          if [ -d "IMAGES" ]; then
+            FRAME_COUNT=$(ls -1 IMAGES/*.jpg 2>/dev/null | wc -l)
+            echo "📊 Total frames extracted: $FRAME_COUNT"
+            
+            FOLDER_SIZE=$(du -sh IMAGES 2>/dev/null | cut -f1)
+            echo "💾 IMAGES folder size: $FOLDER_SIZE"
+          fi
+          
+          echo ""
+          echo "💡 To process more videos, run this workflow again"
+          echo "💡 To change batch size, edit extract_frames.py (videos_per_batch)"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
